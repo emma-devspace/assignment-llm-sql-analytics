@@ -10,6 +10,7 @@ from typing import Any
 
 import sqlparse
 
+from src.conversation import ConversationManager
 from src.llm_client import OpenRouterLLMClient, build_default_llm_client
 from src.schema import SchemaIntrospector
 from src.types import (
@@ -169,20 +170,28 @@ class AnalyticsPipeline:
         self._schema = SchemaIntrospector(self.db_path)
         self._schema_text = self._schema.get_schema_text()
         self._column_names = self._schema.column_names
+        self._conversation = ConversationManager()
         logger.info("Pipeline initialized with %d columns from schema", len(self._column_names))
 
-    def run(self, question: str, request_id: str | None = None) -> PipelineOutput:
+    def run(self, question: str, request_id: str | None = None, session_id: str | None = None) -> PipelineOutput:
         if not request_id:
             request_id = uuid.uuid4().hex[:12]
 
         start = time.perf_counter()
         logger.info("[%s] Pipeline started | question=%s", request_id, question[:100])
 
+        # Multi-turn: resolve follow-up context if session is active
+        schema_text = self._schema_text
+        if session_id:
+            resolved_question, conv_context = self._conversation.resolve_question(question, session_id)
+            if conv_context:
+                schema_text = f"{self._schema_text}\n\n{conv_context}"
+
         # Pre-check: detect dangerous intent so validation can properly reject it
         dangerous_match = DANGEROUS_INTENT_PATTERN.search(question)
 
         # Stage 1: SQL Generation
-        sql_gen_output = self.llm.generate_sql(question, self._schema_text)
+        sql_gen_output = self.llm.generate_sql(question, schema_text)
         sql = sql_gen_output.sql
 
         if sql is None and dangerous_match:
@@ -238,6 +247,11 @@ class AnalyticsPipeline:
             "total_tokens": sql_gen_output.llm_stats.get("total_tokens", 0) + answer_output.llm_stats.get("total_tokens", 0),
             "model": sql_gen_output.llm_stats.get("model", "unknown"),
         }
+
+        if session_id:
+            self._conversation.record_turn(
+                session_id, question, validated_sql, answer_output.answer, status,
+            )
 
         return PipelineOutput(
             status=status,
