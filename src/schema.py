@@ -1,5 +1,3 @@
-"""Schema introspection and caching for the gaming_mental_health SQLite database."""
-
 from __future__ import annotations
 
 import sqlite3
@@ -8,8 +6,6 @@ from typing import Any
 
 
 class SchemaIntrospector:
-    """Introspects SQLite schema and builds compact prompt context for LLM SQL generation."""
-
     def __init__(self, db_path: str | Path, table_name: str = "gaming_mental_health") -> None:
         self.db_path = Path(db_path)
         self.table_name = table_name

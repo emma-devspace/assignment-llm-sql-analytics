@@ -11,25 +11,42 @@ from src.types import SQLGenerationOutput, AnswerGenerationOutput
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "openai/gpt-4.1-nano"
+DEFAULT_FALLBACK_MODELS = "google/gemini-2.0-flash-lite:free"
 
-_TRANSIENT_ERROR_SUBSTRINGS = ("rate limit", "timeout", "502", "503", "529", "overloaded")
+_TRANSIENT_ERROR_SUBSTRINGS = (
+    "rate limit",
+    "timeout",
+    "502",
+    "503",
+    "529",
+    "overloaded",
+)
 
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0
 
 
 class OpenRouterLLMClient:
-    """LLM client using the OpenRouter SDK for chat completions."""
-
     provider_name = "openrouter"
 
-    def __init__(self, api_key: str, model: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str | None = None,
+        fallback_models: list[str] | None = None,
+    ) -> None:
         try:
             from openrouter import OpenRouter
         except ModuleNotFoundError as exc:
             raise RuntimeError("Missing dependency: install 'openrouter'.") from exc
         self.model = model or os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
+        if fallback_models is not None:
+            self._fallback_models = fallback_models
+        else:
+            env_val = os.getenv("OPENROUTER_FALLBACK_MODELS", DEFAULT_FALLBACK_MODELS)
+            self._fallback_models = [m.strip() for m in env_val.split(",") if m.strip()]
         self._client = OpenRouter(api_key=api_key)
+        self._last_model_used: str = self.model
         self._stats: dict[str, int] = {
             "llm_calls": 0,
             "prompt_tokens": 0,
@@ -37,13 +54,20 @@ class OpenRouterLLMClient:
             "total_tokens": 0,
         }
 
-    def _chat(self, messages: list[dict[str, str]], temperature: float, max_tokens: int) -> str:
+    def _try_chat(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        model: str,
+    ) -> str:
+        """Send to a single model with exponential-backoff retries on transient errors."""
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 res = self._client.chat.send(
                     messages=messages,
-                    model=self.model,
+                    model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=False,
@@ -54,13 +78,21 @@ class OpenRouterLLMClient:
                 err_lower = str(exc).lower()
                 if attempt < MAX_RETRIES and any(s in err_lower for s in _TRANSIENT_ERROR_SUBSTRINGS):
                     delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                    logger.warning("LLM call attempt %d failed (%s), retrying in %.1fs", attempt, exc, delay)
+                    logger.warning(
+                        "LLM call attempt %d/%d on %s failed (%s), retrying in %.1fs",
+                        attempt,
+                        MAX_RETRIES,
+                        model,
+                        exc,
+                        delay,
+                    )
                     time.sleep(delay)
                     continue
                 raise
         else:
             raise last_exc  # type: ignore[misc]
 
+        self._last_model_used = model
         self._stats["llm_calls"] += 1
         usage = getattr(res, "usage", None)
         if usage is not None:
@@ -83,6 +115,7 @@ class OpenRouterLLMClient:
         if isinstance(content, str):
             return content.strip()
 
+        # Reasoning models (e.g. gpt-5-nano) may put output in the reasoning field
         reasoning = getattr(msg, "reasoning", None) if msg else None
         if isinstance(reasoning, str) and reasoning.strip():
             logger.warning("Model returned reasoning but no content; extracting from reasoning field")
@@ -90,9 +123,28 @@ class OpenRouterLLMClient:
 
         raise RuntimeError("OpenRouter response contained no extractable text (content and reasoning both empty).")
 
+    def _chat(self, messages: list[dict[str, str]], temperature: float, max_tokens: int) -> str:
+        """Try the primary model, then each fallback in order."""
+        models = [self.model] + list(self._fallback_models)
+        last_exc: Exception | None = None
+        for i, model_name in enumerate(models):
+            try:
+                return self._try_chat(messages, temperature, max_tokens, model_name)
+            except Exception as exc:
+                last_exc = exc
+                if i < len(models) - 1:
+                    logger.warning(
+                        "Model %s failed (%s), falling back to %s",
+                        model_name,
+                        exc,
+                        models[i + 1],
+                    )
+                continue
+        raise last_exc  # type: ignore[misc]
+
     @staticmethod
     def _extract_sql(text: str) -> str | None:
-        """Extract SQL from LLM response. Returns None for unanswerable (sql=null) or missing SQL."""
+        """Returns None for unanswerable (sql=null) or unparseable responses."""
         maybe_json = text.strip()
 
         if maybe_json.startswith("```"):
@@ -147,7 +199,6 @@ class OpenRouterLLMClient:
             '- Respond ONLY with JSON: {"sql": "SELECT ..."}\n'
             "- No explanations, no markdown, just the JSON object."
         )
-        user_prompt = question
 
         start = time.perf_counter()
         error = None
@@ -157,10 +208,10 @@ class OpenRouterLLMClient:
             text = self._chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
+                    {"role": "user", "content": question},
                 ],
                 temperature=0.0,
-                max_tokens=2048,
+                max_tokens=256,
             )
             logger.debug("LLM SQL response: %s", text[:300])
             sql = self._extract_sql(text)
@@ -170,7 +221,7 @@ class OpenRouterLLMClient:
 
         timing_ms = (time.perf_counter() - start) * 1000
         llm_stats = self.pop_stats()
-        llm_stats["model"] = self.model
+        llm_stats["model"] = self._last_model_used
 
         return SQLGenerationOutput(
             sql=sql,
@@ -180,18 +231,29 @@ class OpenRouterLLMClient:
         )
 
     def generate_answer(self, question: str, sql: str | None, rows: list[dict[str, Any]]) -> AnswerGenerationOutput:
+        empty_stats = {
+            "llm_calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "model": self._last_model_used,
+        }
+
         if not sql:
             return AnswerGenerationOutput(
-                answer="I cannot answer this question with the available table and schema. The data does not contain the required information.",
+                answer=(
+                    "I cannot answer this question with the available table and schema."
+                    " The data does not contain the required information."
+                ),
                 timing_ms=0.0,
-                llm_stats={"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "model": self.model},
+                llm_stats=empty_stats,
                 error=None,
             )
         if not rows:
             return AnswerGenerationOutput(
                 answer="The query executed successfully but returned no matching rows.",
                 timing_ms=0.0,
-                llm_stats={"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "model": self.model},
+                llm_stats=empty_stats,
                 error=None,
             )
 
@@ -218,7 +280,7 @@ class OpenRouterLLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.2,
-                max_tokens=2048,
+                max_tokens=512,
             )
         except Exception as exc:
             error = str(exc)
@@ -227,7 +289,7 @@ class OpenRouterLLMClient:
 
         timing_ms = (time.perf_counter() - start) * 1000
         llm_stats = self.pop_stats()
-        llm_stats["model"] = self.model
+        llm_stats["model"] = self._last_model_used
 
         return AnswerGenerationOutput(
             answer=answer,
@@ -238,7 +300,12 @@ class OpenRouterLLMClient:
 
     def pop_stats(self) -> dict[str, Any]:
         out = dict(self._stats)
-        self._stats = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self._stats = {
+            "llm_calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
         return out
 
 

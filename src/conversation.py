@@ -1,22 +1,15 @@
-"""Multi-turn conversation support for the analytics pipeline.
-
-Tracks conversation history per session and resolves follow-up questions
-by injecting prior context into the LLM prompt.
-"""
-
 from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
 MAX_HISTORY_TURNS = 3
 
 FOLLOW_UP_INDICATORS = re.compile(
-    r"\b(it|that|those|this|them|the same|previous|above|instead|also|what about|how about|now|and)\b",
+    r"\b(it|that|those|this|them|the same|previous|above|instead|also|what about|how about|now)\b",
     re.IGNORECASE,
 )
 
@@ -52,8 +45,6 @@ class ConversationSession:
 
 
 class ConversationManager:
-    """Manages conversation sessions and detects follow-up questions."""
-
     def __init__(self) -> None:
         self._sessions: dict[str, ConversationSession] = {}
 
@@ -73,20 +64,25 @@ class ConversationManager:
         return False
 
     def resolve_question(self, question: str, session_id: str) -> tuple[str, str | None]:
-        """Returns (possibly-enriched question, conversation context or None)."""
+        """Returns (question, conversation_context) — context is None for non-follow-ups."""
         session = self.get_or_create_session(session_id)
         if self.is_follow_up(question, session):
             context = session.get_context_for_prompt()
-            logger.info("Follow-up detected for session %s, injecting %d turns of context",
-                        session_id, len(session.turns))
+            logger.info(
+                "Follow-up detected for session %s, injecting %d turns of context",
+                session_id,
+                len(session.turns),
+            )
             return question, context
         return question, None
 
     def record_turn(self, session_id: str, question: str, sql: str | None, answer: str, status: str) -> None:
         session = self.get_or_create_session(session_id)
-        session.add_turn(ConversationTurn(
-            question=question,
-            sql=sql,
-            answer=answer,
-            status=status,
-        ))
+        session.add_turn(
+            ConversationTurn(
+                question=question,
+                sql=sql,
+                answer=answer,
+                status=status,
+            )
+        )

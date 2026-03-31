@@ -11,7 +11,11 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from src.pipeline import AnalyticsPipeline
 from scripts.gaming_csv_to_db import csv_to_sqlite
-from scripts.gaming_csv_to_db import DEFAULT_CSV_PATH, DEFAULT_DB_PATH, DEFAULT_TABLE_NAME
+from scripts.gaming_csv_to_db import (
+    DEFAULT_CSV_PATH,
+    DEFAULT_DB_PATH,
+    DEFAULT_TABLE_NAME,
+)
 from src.types import (
     AnswerGenerationOutput,
     PipelineOutput,
@@ -28,7 +32,10 @@ def _ensure_gaming_db() -> Path:
     return DEFAULT_DB_PATH
 
 
-@unittest.skipUnless(os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY is required for LLM integration tests.")
+@unittest.skipUnless(
+    os.getenv("OPENROUTER_API_KEY"),
+    "OPENROUTER_API_KEY is required for LLM integration tests.",
+)
 class PublicPipelineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

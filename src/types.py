@@ -9,6 +9,7 @@ from typing import Any
 @dataclass
 class PipelineInput:
     """Input to the AnalyticsPipeline.run() method."""
+
     question: str
     request_id: str | None = None
 
@@ -21,6 +22,7 @@ class SQLGenerationOutput:
     query refinement), populate intermediate_outputs with per-call details.
     llm_stats aggregates all calls for efficient evaluation.
     """
+
     sql: str | None
     timing_ms: float
     llm_stats: dict[str, Any]  # Aggregated: {llm_calls, prompt_tokens, completion_tokens, total_tokens, model}
@@ -31,6 +33,7 @@ class SQLGenerationOutput:
 @dataclass
 class SQLValidationOutput:
     """Output from the SQL validation stage."""
+
     is_valid: bool
     validated_sql: str | None
     error: str | None = None
@@ -40,6 +43,7 @@ class SQLValidationOutput:
 @dataclass
 class SQLExecutionOutput:
     """Output from the SQL execution stage."""
+
     rows: list[dict[str, Any]]
     row_count: int
     timing_ms: float
@@ -54,6 +58,7 @@ class AnswerGenerationOutput:
     populate intermediate_outputs with per-call details.
     llm_stats aggregates all calls for efficient evaluation.
     """
+
     answer: str
     timing_ms: float
     llm_stats: dict[str, Any]  # Aggregated: {llm_calls, prompt_tokens, completion_tokens, total_tokens, model}
@@ -64,6 +69,7 @@ class AnswerGenerationOutput:
 @dataclass
 class PipelineOutput:
     """Complete output from AnalyticsPipeline.run()."""
+
     # Status
     status: str  # "success" | "unanswerable" | "invalid_sql" | "error"
     question: str

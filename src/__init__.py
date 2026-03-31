@@ -1,5 +1,3 @@
-# SQL Analytics Pipeline package
-
 import logging
 import os
 

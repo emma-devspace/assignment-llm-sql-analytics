@@ -44,9 +44,7 @@ def map_pd_dtype_to_sql(dtype) -> str:
     return SQLITE_TYPE_MAP.get(key, "TEXT")
 
 
-def create_table_from_df(
-    conn: sqlite3.Connection, table_name: str, df: pd.DataFrame, if_exists: str = "fail"
-):
+def create_table_from_df(conn: sqlite3.Connection, table_name: str, df: pd.DataFrame, if_exists: str = "fail"):
     cursor = conn.cursor()
 
     # 1. Handle "replace" logic explicitly
@@ -63,9 +61,7 @@ def create_table_from_df(
 
     if table_exists:
         if if_exists == "fail":
-            raise ValueError(
-                f"Table '{table_name}' already exists. Use --if-exists replace or append."
-            )
+            raise ValueError(f"Table '{table_name}' already exists. Use --if-exists replace or append.")
         elif if_exists == "append":
             return
 
@@ -88,10 +84,7 @@ def insert_chunk(conn: sqlite3.Connection, table_name: str, df: pd.DataFrame):
     placeholders = ",".join(["?"] * len(df.columns))
     sql = f'INSERT INTO "{table_name}" ({",".join(cols)}) VALUES ({placeholders})'
 
-    rows = [
-        tuple(None if (pd.isna(x)) else x for x in row)
-        for row in df.itertuples(index=False, name=None)
-    ]
+    rows = [tuple(None if (pd.isna(x)) else x for x in row) for row in df.itertuples(index=False, name=None)]
     cursor.executemany(sql, rows)
     conn.commit()
 
@@ -145,7 +138,7 @@ def verify_database(db_path: Path, table_name: str):
     cursor.execute(f'PRAGMA table_info("{table_name}")')
     columns = cursor.fetchall()
 
-    print(f"\n--- Database Verification ---")
+    print("\n--- Database Verification ---")
     print(f"Table: {table_name}")
     print(f"Total rows: {total_rows:,}")
     print(f"Columns ({len(columns)}):")
@@ -155,14 +148,14 @@ def verify_database(db_path: Path, table_name: str):
 
     # Gender distribution
     try:
-        cursor.execute(f'''
+        cursor.execute(f"""
             SELECT gender, COUNT(*) as count
             FROM "{table_name}"
             GROUP BY gender
             ORDER BY count DESC
-        ''')
+        """)
         distribution = cursor.fetchall()
-        print(f"\nGender Distribution:")
+        print("\nGender Distribution:")
         for gender, group_count in distribution:
             percentage = (group_count / total_rows) * 100 if total_rows > 0 else 0
             print(f"  {gender}: {group_count:,} ({percentage:.1f}%)")
@@ -171,7 +164,7 @@ def verify_database(db_path: Path, table_name: str):
 
     # Addiction level distribution (bucketed: low 0-2, medium 2-5, high 5+)
     try:
-        cursor.execute(f'''
+        cursor.execute(f"""
             SELECT
                 CASE
                     WHEN addiction_level < 2 THEN 'Low (0-2)'
@@ -182,9 +175,9 @@ def verify_database(db_path: Path, table_name: str):
             FROM "{table_name}"
             GROUP BY bucket
             ORDER BY MIN(addiction_level)
-        ''')
+        """)
         distribution = cursor.fetchall()
-        print(f"\nAddiction Level Distribution:")
+        print("\nAddiction Level Distribution:")
         for bucket, group_count in distribution:
             percentage = (group_count / total_rows) * 100 if total_rows > 0 else 0
             print(f"  {bucket}: {group_count:,} ({percentage:.1f}%)")
@@ -195,9 +188,7 @@ def verify_database(db_path: Path, table_name: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Convert Gaming Mental Health CSV to SQLite database."
-    )
+    parser = argparse.ArgumentParser(description="Convert Gaming Mental Health CSV to SQLite database.")
     parser.add_argument(
         "--csv",
         type=Path,
@@ -249,7 +240,7 @@ def main():
             verify_database(args.db, args.table)
 
         print("\n✓ Conversion completed successfully!")
-        print(f"\nYou can now use this database with the LLM agent.")
+        print("\nYou can now use this database with the LLM agent.")
         print(f"Table name: '{args.table}'")
         print(f"Database path: {args.db}")
 
@@ -265,6 +256,7 @@ def main():
     except Exception as e:
         print(f"Unexpected error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
